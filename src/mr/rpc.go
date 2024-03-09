@@ -16,6 +16,9 @@ import (
 // and reply for an RPC.
 //
 
+const GetJob = "Coordinator.GetJob"
+const CompleteJob = "Coordinator.CompleteJob"
+
 type MapOrReduce int
 
 const (
@@ -27,18 +30,23 @@ const (
 //struct for returning a job from master
 type WorkerJobPayload struct {
 	id            string //request id
+	index         int    //index of the map or reduced task
 	mapOrReduce   MapOrReduce
 	fileLocations []string //list of file locations either for map task or reduce task
 	nReduce       int      //no of reduce tasks
-	reduceIndex   int      //index of the reduced task
 }
 
-type ExampleArgs struct {
-	X int
+type WorkerJobRequest struct {
+	id string //worker id
 }
 
-type ExampleReply struct {
-	Y int
+type WorkerJobCompletionPayload struct {
+	id            string //request id
+	index         int    //index of the map or reduced task
+	workerId      string
+	mapOrReduce   MapOrReduce
+	fileLocations []string //list of file locations either for map task or reduce task
+	nReduce       int      //no of reduce tasks
 }
 
 // Add your RPC definitions here.

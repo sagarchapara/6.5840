@@ -36,11 +36,13 @@ func ihash(key string) int {
 }
 
 type WorkerState struct {
-	id      string
-	request chan WorkerJobPayload
-	exit    chan bool
-	mapf    func(string, string) []KeyValue
-	reducef func(string, []string) string
+	mu         sync.Mutex
+	id         string
+	request    chan WorkerJobPayload
+	exit       chan bool
+	mapf       func(string, string) []KeyValue
+	reducef    func(string, []string) string
+	errorCount int
 }
 
 //
@@ -52,11 +54,13 @@ func Worker(mapf func(string, string) []KeyValue,
 	workerId := uuid.New()
 
 	state := WorkerState{
-		id:      workerId.String(),
-		request: make(chan WorkerJobPayload),
-		exit:    make(chan bool),
-		mapf:    mapf,
-		reducef: reducef,
+		mu:         sync.Mutex{},
+		id:         workerId.String(),
+		request:    make(chan WorkerJobPayload),
+		exit:       make(chan bool),
+		mapf:       mapf,
+		reducef:    reducef,
+		errorCount: 0,
 	}
 
 	var wg sync.WaitGroup
@@ -84,25 +88,91 @@ func RunWorker(state *WorkerState) {
 }
 
 func PingMaster(state *WorkerState) {
-	//Ping master
+	if !state.mu.TryLock() {
+		return
+	}
+	defer state.mu.Unlock()
+
+	args := WorkerJobRequest{
+		id: state.id,
+	}
+
+	reply := WorkerJobPayload{}
+
+	err := call(GetJob, &args, &reply)
+
+	if err != nil {
+		log.Fatalf("Cannot get job from master %v", err)
+
+		state.errorCount++
+
+		if state.errorCount > 3 {
+			state.exit <- true
+		}
+
+		return
+	}
+
+	state.errorCount = 0
+
+	if reply.id != "" {
+		state.request <- reply
+	}
 }
 
 func HandleRequest(state *WorkerState, request *WorkerJobPayload) {
 	if request.mapOrReduce == Map {
+		unqId := state.id + "_" + request.id + "_" + strconv.Itoa(request.index)
 
-		unqId := state.id + "_" + request.id
+		fileLocations, err := ExecuteMapTask(unqId, request.fileLocations, state.mapf, request.nReduce)
 
-		ExecuteMapTask(unqId, request.fileLocations, state.mapf, request.nReduce)
+		if err != nil {
+			log.Fatalf("Cannot execute map task %v", err)
+			return
+		}
 
-		//after this update master
+		WorkerJobCompletionPayload := WorkerJobCompletionPayload{
+			id:            request.id,
+			index:         request.index,
+			workerId:      state.id,
+			mapOrReduce:   request.mapOrReduce,
+			fileLocations: fileLocations,
+			nReduce:       request.nReduce,
+		}
+
+		ReplyMasterForCompletion(state, &WorkerJobCompletionPayload)
+
 	} else if request.mapOrReduce == Reduce {
-		ExecuteReduceTask(request.reduceIndex, request.fileLocations, state.reducef)
+		filepath, err := ExecuteReduceTask(request.index, request.fileLocations, state.reducef)
+
+		if err != nil {
+			log.Fatalf("Cannot execute reduce task %v", err)
+			return
+		}
 
 		//after this update master
+		WorkerJobCompletionPayload := WorkerJobCompletionPayload{
+			id:            request.id,
+			index:         request.index,
+			workerId:      state.id,
+			mapOrReduce:   request.mapOrReduce,
+			fileLocations: []string{filepath}, // Create a []string with a single element, filepath
+			nReduce:       request.nReduce,
+		}
+
+		ReplyMasterForCompletion(state, &WorkerJobCompletionPayload)
 	}
 }
 
-func ExecuteMapTask(workerId string, files []string, mapf func(string, string) []KeyValue, nReduce int) []string {
+func ReplyMasterForCompletion(state *WorkerState, request *WorkerJobCompletionPayload) {
+	err := call(CompleteJob, &request, &struct{}{})
+
+	if err != nil {
+		log.Fatalf("Cannot complete job %v", err)
+	}
+}
+
+func ExecuteMapTask(workerId string, files []string, mapf func(string, string) []KeyValue, nReduce int) ([]string, error) {
 
 	keyHashMap := make(map[int][]KeyValue)
 
@@ -123,12 +193,13 @@ func ExecuteMapTask(workerId string, files []string, mapf func(string, string) [
 
 		if err != nil {
 			log.Fatalf("Something went bad %s", fileLocation)
+			return nil, err
 		}
 
 		fileLocations[index] = fileLocation
 	}
 
-	return fileLocations
+	return fileLocations, nil
 }
 
 func ExecuteReduceTask(id int, fileLocations []string, reducef func(string, []string) string) (string, error) {
@@ -260,35 +331,6 @@ func GetFileLocation(fileName string) string {
 	dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
 
 	return fmt.Sprintf("%s/%s", dir, fileName)
-}
-
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok != nil {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
 }
 
 //
