@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"path/filepath"
-
 	"github.com/google/uuid"
 )
 
@@ -63,46 +61,54 @@ func Worker(mapf func(string, string) []KeyValue,
 		errorCount: 0,
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		RunWorker(&state)
-	}()
-	wg.Wait()
+	log.Printf("Worker %s started", state.id)
+
+	RunWorker(&state)
+
+	log.Printf("Worker %s stopped", state.id)
 }
 
 func RunWorker(state *WorkerState) {
 
+	log.Printf("Worker %s is running", state.id)
+
 	ticker := time.NewTicker(5 * time.Second)
 
-	select {
-	case <-state.exit:
-		ticker.Stop()
-		return
-	case request := <-state.request:
-		go HandleRequest(state, &request)
-	case <-ticker.C:
-		go PingMaster(state)
+	for {
+		select {
+		case <-state.exit:
+			log.Printf("Worker %s is exiting", state.id)
+			ticker.Stop()
+			return
+		case request := <-state.request:
+			log.Printf("Worker %s received a request", state.id)
+			go HandleRequest(state, &request)
+		case <-ticker.C:
+			log.Printf("Worker %s is pinging master", state.id)
+			go PingMaster(state)
+		}
 	}
 }
 
 func PingMaster(state *WorkerState) {
 	if !state.mu.TryLock() {
+		log.Printf("Worker %s is already busy", state.id)
 		return
 	}
 	defer state.mu.Unlock()
 
 	args := WorkerJobRequest{
-		id: state.id,
+		Id: state.id,
 	}
 
 	reply := WorkerJobPayload{}
 
 	err := call(GetJob, &args, &reply)
 
+	log.Printf("Worker %s pinged master", state.id)
+
 	if err != nil {
-		log.Fatalf("Cannot get job from master %v", err)
+		log.Printf("Cannot get job from master %s %v", state.id, err)
 
 		state.errorCount++
 
@@ -115,16 +121,16 @@ func PingMaster(state *WorkerState) {
 
 	state.errorCount = 0
 
-	if reply.id != "" {
+	if reply.Id != "" {
 		state.request <- reply
 	}
 }
 
 func HandleRequest(state *WorkerState, request *WorkerJobPayload) {
-	if request.mapOrReduce == Map {
-		unqId := state.id + "_" + request.id + "_" + strconv.Itoa(request.index)
+	if request.MapOrReduce == Map {
+		unqId := state.id + "_" + request.Id + "_" + strconv.Itoa(request.Index)
 
-		fileLocations, err := ExecuteMapTask(unqId, request.fileLocations, state.mapf, request.nReduce)
+		fileLocations, err := ExecuteMapTask(unqId, request.FileLocations, state.mapf, request.NReduce)
 
 		if err != nil {
 			log.Fatalf("Cannot execute map task %v", err)
@@ -132,18 +138,18 @@ func HandleRequest(state *WorkerState, request *WorkerJobPayload) {
 		}
 
 		WorkerJobCompletionPayload := WorkerJobCompletionPayload{
-			id:            request.id,
-			index:         request.index,
-			workerId:      state.id,
-			mapOrReduce:   request.mapOrReduce,
-			fileLocations: fileLocations,
-			nReduce:       request.nReduce,
+			Id:            request.Id,
+			Index:         request.Index,
+			WorkerId:      state.id,
+			MapOrReduce:   request.MapOrReduce,
+			FileLocations: fileLocations,
+			NReduce:       request.NReduce,
 		}
 
 		ReplyMasterForCompletion(state, &WorkerJobCompletionPayload)
 
-	} else if request.mapOrReduce == Reduce {
-		filepath, err := ExecuteReduceTask(request.index, request.fileLocations, state.reducef)
+	} else if request.MapOrReduce == Reduce {
+		filepath, err := ExecuteReduceTask(request.Index, request.FileLocations, state.reducef)
 
 		if err != nil {
 			log.Fatalf("Cannot execute reduce task %v", err)
@@ -152,12 +158,12 @@ func HandleRequest(state *WorkerState, request *WorkerJobPayload) {
 
 		//after this update master
 		WorkerJobCompletionPayload := WorkerJobCompletionPayload{
-			id:            request.id,
-			index:         request.index,
-			workerId:      state.id,
-			mapOrReduce:   request.mapOrReduce,
-			fileLocations: []string{filepath}, // Create a []string with a single element, filepath
-			nReduce:       request.nReduce,
+			Id:            request.Id,
+			Index:         request.Index,
+			WorkerId:      state.id,
+			MapOrReduce:   request.MapOrReduce,
+			FileLocations: []string{filepath}, // Create a []string with a single element, filepath
+			NReduce:       request.NReduce,
 		}
 
 		ReplyMasterForCompletion(state, &WorkerJobCompletionPayload)
@@ -196,6 +202,8 @@ func ExecuteMapTask(workerId string, files []string, mapf func(string, string) [
 			return nil, err
 		}
 
+		log.Printf("Map task completed, fileLocation for %d reduce task %s", index, fileLocation)
+
 		fileLocations[index] = fileLocation
 	}
 
@@ -219,6 +227,8 @@ func ExecuteReduceTask(id int, fileLocations []string, reducef func(string, []st
 	}
 
 	fileLocation, err := WriteReduceResultToFile(id, kvp, reducef)
+
+	log.Printf("Reduce task completed, fileLocation for %d reduce task %s", id, fileLocation)
 
 	if err != nil {
 		return "", err
@@ -328,9 +338,11 @@ func WriteKeyValueToFile(workerId string, index int, kva []KeyValue) (string, er
 }
 
 func GetFileLocation(fileName string) string {
-	dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
+	// dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
 
-	return fmt.Sprintf("%s/%s", dir, fileName)
+	// return fmt.Sprintf("%s/%s", dir, fileName)
+
+	return fileName
 }
 
 //

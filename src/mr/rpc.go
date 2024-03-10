@@ -29,24 +29,24 @@ const (
 
 //struct for returning a job from master
 type WorkerJobPayload struct {
-	id            string //request id
-	index         int    //index of the map or reduced task
-	mapOrReduce   MapOrReduce
-	fileLocations []string //list of file locations either for map task or reduce task
-	nReduce       int      //no of reduce tasks
+	Id            string //request id
+	Index         int    //index of the map or reduced task
+	MapOrReduce   MapOrReduce
+	FileLocations []string //list of file locations either for map task or reduce task
+	NReduce       int      //no of reduce tasks
 }
 
 type WorkerJobRequest struct {
-	id string //worker id
+	Id string //worker id
 }
 
 type WorkerJobCompletionPayload struct {
-	id            string //request id
-	index         int    //index of the map or reduced task
-	workerId      string
-	mapOrReduce   MapOrReduce
-	fileLocations []string //list of file locations either for map task or reduce task
-	nReduce       int      //no of reduce tasks
+	Id            string //request id
+	Index         int    //index of the map or reduced task
+	WorkerId      string
+	MapOrReduce   MapOrReduce
+	FileLocations []string //list of file locations either for map task or reduce task
+	NReduce       int      //no of reduce tasks
 }
 
 // Add your RPC definitions here.
